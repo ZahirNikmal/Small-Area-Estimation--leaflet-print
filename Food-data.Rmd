@@ -1,0 +1,1615 @@
+```{r}
+library(tidyverse)
+library(tidycensus)
+library(haven)
+
+Food_data <-read_xpt("C:/Users/user/Downloads/P_DR1IFF.xpt")
+demographics<-read_xpt("C:/Users/user/Downloads/P_DEMO.xpt")
+
+summary(Food_data)
+
+```
+
+```{r}
+#Lets remove the unnecessary variables from Food data 
+
+
+Food_data <- select(Food_data, SEQN, DR1ILINE, DRDINT, DR1_040Z, DR1IFDCD, DR1IGRMS, DR1ISUGR)
+
+##lets change the variable names to proper format
+
+colnames(Food_data)[2] <- "Food_number"
+colnames(Food_data)[3] <- "Number_of_days_intake"
+colnames(Food_data)[4] <- "Did_eat_the_food_at-home"
+colnames(Food_data)[5] <- "food_code"
+colnames(Food_data)[6] <- "Grams"
+colnames(Food_data)[7] <- "Sugar"
+#========================================================================
+
+#Lets remove the unnecessary variables from demographics 
+
+demographics <- select(demographics, SEQN, RIAGENDR, RIDAGEYR,DMDBORN4, RIDRETH3,DMDEDUC2, DMDMARTZ, INDFMPIR)
+
+#lets change the variable names to proper format
+
+colnames(demographics)[2] <- "MALE"
+colnames(demographics)[3] <- "AGE"
+colnames(demographics)[4] <- "Country of Birth"
+colnames(demographics)[5] <- "Race"
+colnames(demographics)[6] <- "EDUCATION"
+colnames(demographics)[7] <- "MARITAL"
+colnames(demographics)[8] <- "Family_income_to_poverty"
+
+# Now lets filter age by 20+ (We dont need food preferences of teenagers, Also it will remove a lot of NAs that we have in Education level, some foods, martial status, language of interview and other variables)
+
+demographics <- demographics %>% filter(AGE>= 20)
+
+# also to better match the ACS data we will remove the 2 categories from education level as they are only 15 observations
+demographics<-demographics[demographics$`EDUCATION`!= "7",]
+demographics<-demographics[demographics$`EDUCATION`!= "9",]
+
+#==================================================================
+
+# lets merge food data with demographic data
+
+merged_set<- merge(Food_data, demographics , by = "SEQN")
+
+```
+
+# Now lets mege the food code with the food description(names)
+
+```{r}
+
+library(dplyr)
+
+library("readxl")
+
+foodnames<- read_excel("C:/Users/user/Downloads/WWEIA2017_March2020_foodcat_FNDDS.xlsx")
+
+# merging data by food code
+
+merged_set_final <- merge(x=merged_set,y=foodnames, 
+          by="food_code", all.x=TRUE)
+
+merged_set_final<- merged_set_final %>% relocate(food_code, .before=food_code_description)
+
+
+```
+
+# Now to mege it with ACS PUMS data
+
+## Recode demographic variables according to American Community Survey standards
+
+Export PUMS variable definitions.
+
+```{r}
+library(tidycensus)
+library(tidyverse)
+library(rio)
+pums_vars_2020 <- pums_variables%>%
+  filter(survey=="acs5",
+         year==2020,
+         level == "person")
+
+export(pums_vars_2020,"pums_vars_2021.xlsx")
+
+```
+
+Get PUMS data ACS data contains 386061 respondents representing the whole population of California.
+
+```{r}
+
+gc()
+memory.limit(9999999999)
+gc() 
+
+Western_states <- c("WA", "OR", "ID", "NV", "CA")
+Western_states1 <- c( "UT", "AZ", "NM", "TX")
+
+pums1 <- get_pums(
+  variables = c("PUMA", 
+                "PWGTP",
+                "SEX", 
+                "AGEP", 
+                "SCHL",
+                "HISP",
+                "RACAIAN",
+                "RACASN",
+                "RACBLK",
+                "RACNH",
+                "RACPI",
+                "RACSOR",
+                "RACWHT",
+                "RACNUM",
+                "MAR",
+                "POVPIP",
+                "CIT"),
+  state = Western_states1,
+  survey = "acs5",
+  year = 2020)
+
+Pums2 <- rbind(pums, pums1)
+pums <- Pums2
+
+export(pums,"pums_2020.xlsx")
+
+```
+
+#Recode PUMS variables
+
+```{r}
+ 
+pums_final<-pums%>%transmute(
+  PUMA=PUMA,
+  PWGTP=PWGTP,
+  AGE=AGEP,
+  POVPIP= POVPIP/100,
+  EDUCATION=case_when(
+    SCHL %in% c("01","02","03","04","05","06","07",
+                "08","09","10","11")~"Less than high school degree",
+    SCHL %in% c("12","13","14","15")~ "9-11th grade_Includes 12th grade with no diploma",
+    SCHL %in% c("16","17")~ "High school graduate/GED or equivalent",
+    SCHL %in% c("18","19","20")~ "Some college or AA degree",
+    SCHL %in% c("21","22","23","24")~ "College graduate or above", 
+    TRUE~"Unknown"),
+  MALE=as.numeric(SEX=="1"),
+  Race=case_when(
+    HISP %in% c("02")~"Mexican American",
+    HISP %in% c("03","04","05","06","07","08","09","10","11","12","13","14","15","16","17","18","19","20","21","22","23","24")  ~"Other Hispanic",
+  RACWHT %in% c("1")~"White",
+  RACBLK %in% c("1")~"Black",
+  RACASN %in% c("1")~"Asian",
+  RACNUM %in% c("1","2","03","04","05","06")~"Other Race - Including Multi-Racial"),
+    RACE_NAT_HAW=as.numeric(RACNH),
+  RACE_PAC_ISL=as.numeric(RACPI),
+  RACE_NAT_AM=as.numeric(RACAIAN),
+MARITAL=case_when(
+MAR=="1"~"Married",
+MAR%in% c("2","3","4")~"Separated, divorced or widowed",
+MAR=="5"~"Single"),
+CIT=case_when(
+    CIT=="1"~"1",
+    TRUE~"2")
+)
+
+# lets convert income to poverty ratio to the same values as of Food data
+pums_final <- mutate(pums_final, POVPIP = case_when(
+  POVPIP == -0.01 ~ 0, POVPIP == 5.01~5,
+  TRUE   ~ POVPIP 
+))
+
+# Also since we filterd age in survey data lets filter age by 20 in census data too
+
+pums_final <- pums_final %>% filter(AGE >= 20)
+
+#Also
+
+pums_final$Gender <- factor(pums_final$MALE, levels = c(0, 1), labels = c("Female", "Male"))
+
+
+pums_final %>% count(`Race`, sort = TRUE)
+
+```
+
+## Convert character variables to factors
+
+```{r}
+
+pums_final$EDUCATION<- as.factor(pums_final$EDUCATION)
+pums_final$Race<- as.factor(pums_final$Race)
+pums_final$MARITAL<- as.factor(pums_final$MARITAL)
+pums_final$CIT<- as.factor(pums_final$CIT)
+pums_final$Gender<- as.factor(pums_final$Gender)
+
+#rename columns
+colnames(pums_final)[colnames(pums_final) == "CIT"] ="Country of Birth"
+colnames(pums_final)[colnames(pums_final) == "POVPIP"] ="Family_income_to_poverty"
+
+#survy data final
+
+#change to factors Survey variables
+
+merged_set_final$Race<- factor(merged_set_final$Race, levels = c(1, 2, 3,4,6,7), labels = c("Mexican American", "Other Hispanic","White", "Black", "Asian", "Other Race - Including Multi-Racial"))
+
+merged_set_final$EDUCATION<- factor(merged_set_final$EDUCATION, levels = c(1, 2, 3,4,5), labels = c("Less than high school degree", "9-11th grade_Includes 12th grade with no diploma", "High school graduate/GED or equivalent", "Some college or AA degree", "College graduate or above"))
+
+merged_set_final$Gender <- factor(merged_set_final$MALE, levels = c(1, 2), labels = c("Male", "Female"))
+merged_set_final$MARITAL <- factor(merged_set_final$MARITAL, levels = c(1, 2,3), labels = c("Married", "Separated, divorced or widowed", "Single"))
+
+merged_set_final<-merged_set_final[merged_set_final$`Did_eat_the_food_at-home` != "9",]
+
+merged_set_final$`Did_eat_the_food_at-home` <- factor(merged_set_final$`Did_eat_the_food_at-home`, levels = c(1, 2), labels = c("Yes", "No"))
+
+merged_set_final$Gender <- as.factor(merged_set_final$Gender)
+merged_set_final$`Did_eat_the_food_at-home` <- as.factor(merged_set_final$`Did_eat_the_food_at-home`)
+merged_set_final$`Country of Birth` <- as.factor(merged_set_final$`Country of Birth`)
+merged_set_final$EDUCATION <- as.factor(merged_set_final$EDUCATION)
+merged_set_final$`MARITAL` <- as.factor(merged_set_final$`MARITAL`)
+merged_set_final$food_code_description <- as.factor(merged_set_final$food_code_description)
+merged_set_final$category_description <- as.factor(merged_set_final$category_description) 
+merged_set_final$final_category <- as.factor(merged_set_final$final_category)
+
+# lets change the set name
+
+survey_final<- merged_set_final
+
+```
+
+## Remove non-existent race
+
+There are no Pacific islanders in the survey, so we remove this variable.
+
+```{r}
+pums_final<-pums_final%>%
+  select(-any_of("RACE_PAC_ISL"))
+
+pums_final<-pums_final%>%
+  select(-any_of("RACE_NAT_HAW"))
+
+pums_final<-pums_final%>%
+  select(-any_of("RACE_NAT_AM"))
+
+pums_final<-pums_final%>%
+  select(-any_of("Family_income_to_poverty"))
+
+pums_final<-pums_final%>%
+  select(-any_of("SEQN"))
+
+survey_final<-survey_final%>% select(-c(reports_day1, reports_day2 ,category_number , Food_number, food_code, category_description, Number_of_days_intake, Family_income_to_poverty, SEQN, MALE, food_code_description))
+
+```
+
+Compare two datasets
+
+```{r}
+janitor::compare_df_cols(pums_final,survey_final)
+```
+
+```{r}
+summary(survey_final)
+ summary(pums_final)
+
+survey_final<-survey_final%>%filter(!is.na(MARITAL))
+summary(survey_final$MARITAL)
+
+```
+
+## Predictive Models of SCORE1-SCORE7
+
+```{r}
+
+
+```
+
+## Create cluster membership for survey data
+
+```{r}
+
+survey_meat <-survey_final %>% filter( final_category == "Meat")
+survey_Milk_Dairy <-survey_final %>% filter( final_category == "Milk&Dairy")
+survey_Fast_food <-survey_final %>% filter( final_category == "Fast food")
+survey_Fruits <-survey_final %>% filter( final_category == "Fruits")
+survey_Vegetables <-survey_final %>% filter( final_category == "Vegetables")
+
+```
+
+## Multi-class regression model
+
+```{r}
+
+library(tidymodels)
+library(ranger)
+set.seed(123)
+
+
+rf_spec <- rand_forest(trees=1000,
+                       mtry = tune(),
+  min_n = tune()) %>%
+  set_engine("ranger",importance="permutation") %>%
+  set_mode("regression")
+
+rf_recipe<-recipe(Grams ~., survey_meat %>%select(Grams, AGE, Gender, EDUCATION, MARITAL,Race, 'Country of Birth' ))
+
+tune_wf <- workflow() %>%
+  add_recipe(rf_recipe) %>%
+  add_model(rf_spec)
+
+# 10-fold crossvalidation
+set.seed(345)
+folds <- vfold_cv(survey_meat, v = 10,strata = Grams)
+
+tune_res <- tune_grid(
+  tune_wf,
+  resamples = folds,
+  grid = 5)
+
+tune_res
+
+# select the best hyperparameters
+best_auc <- select_best(tune_res, "rmse")
+
+
+# finalize workflow
+final_wf <- tune_wf%>%
+  finalize_workflow(best_auc)
+
+# final fit
+rf_fit <- final_wf%>%
+  parsnip::fit(survey_meat)
+
+library(vip)
+vip(rf_fit%>%extract_fit_engine())+theme_bw()
+
+library(DALEXtra)
+
+vip_features <- c("AGE", "EDUCATION", "MARITAL", 
+                  "Gender", "Race", "Country of Birth")
+
+vip_train <- 
+  survey_final %>% 
+  select(all_of(vip_features))
+
+
+explainer_rf <- 
+  explain_tidymodels(
+    rf_fit, 
+    data = vip_train, 
+    y = survey_meat$Grams,
+    label = "random forest",
+    verbose = FALSE
+  )
+
+duplex <- survey_meat[120,]
+
+rf_breakdown <- predict_parts(explainer = explainer_rf, new_observation = duplex)
+
+####
+library(forcats)
+
+big_house <- vip_train[1269,]
+
+set.seed(1802)
+shap_house <- 
+  predict_parts(
+    explainer = explainer_rf, 
+    new_observation = big_house, 
+    type = "shap",
+    B = 20
+  )
+
+shap_house %>%
+  group_by(variable) %>%
+  mutate(mean_val = mean(contribution)) %>%
+  ungroup() %>%
+  mutate(variable = fct_reorder(variable, abs(mean_val))) %>%
+  ggplot(aes(contribution, variable, fill = mean_val > 0)) +
+  geom_col(data = ~distinct(., variable, mean_val), 
+           aes(mean_val, variable), 
+           alpha = 0.5) +
+  geom_boxplot(width = 0.5) +
+  theme(legend.position = "none") +
+  scale_fill_viridis_d() +
+  labs(y = NULL)
+
+###
+vip_rf <- model_parts(explainer_rf, loss_function = loss_root_mean_square)
+
+ggplot_imp(vip_rf)
+
+####
+
+set.seed(1805)
+pdp_age <- model_profile(explainer_rf, N = 10000, variables = "Gender")
+
+ggplot_pdp(pdp_age, Gender)  +
+  labs(x = "Age", 
+       y = "Grams", 
+       color = NULL)
+
+###
+
+set.seed(1806)
+pdp_liv <- model_profile(explainer_rf, N = 1000, 
+                         variables = "AGE",
+                         groups = "Race")
+
+ggplot_pdp(pdp_liv, AGE) +
+  scale_y_log10() +
+  scale_color_brewer(palette = "Dark2") +
+  labs(x = "Gross living area", 
+       y = "Sale Price", 
+       color = NULL)
+
+```
+
+## model for dairy
+```{r}
+rf_recipe1<-recipe(Grams ~., survey_Milk_Dairy %>%select(Grams, AGE, Gender, EDUCATION, MARITAL,Race, 'Country of Birth' ))
+
+tune_wf1 <- workflow() %>%
+  add_recipe(rf_recipe1) %>%
+  add_model(rf_spec)
+
+# 10-fold crossvalidation
+set.seed(345)
+folds1 <- vfold_cv(survey_Milk_Dairy, v = 10,strata = Grams)
+
+tune_res1 <- tune_grid(
+  tune_wf1,
+  resamples = folds1,
+  grid = 5)
+
+tune_res1
+
+# select the best hyperparameters
+best_auc1 <- select_best(tune_res1, "rmse")
+
+
+# finalize workflow
+final_wf1 <- tune_wf1%>%
+  finalize_workflow(best_auc1)
+
+# final fit
+rf_fit1 <- final_wf1%>%
+  parsnip::fit(survey_Milk_Dairy)
+
+library(vip)
+vip(rf_fit1%>%extract_fit_engine())+theme_bw()
+
+```
+## Model for Fast food
+```{r}
+rf_recipe2 <-recipe(Grams ~., survey_Fast_food %>%select(Grams, AGE, Gender, EDUCATION, MARITAL,Race, 'Country of Birth' ))
+
+tune_wf2 <- workflow() %>%
+  add_recipe(rf_recipe2) %>%
+  add_model(rf_spec)
+
+# 10-fold crossvalidation
+set.seed(345)
+folds2 <- vfold_cv(survey_Fast_food, v = 10,strata = Grams)
+
+tune_res2 <- tune_grid(
+  tune_wf2,
+  resamples = folds2,
+  grid = 5)
+
+tune_res2
+
+# select the best hyperparameters
+best_auc2 <- select_best(tune_res2, "rmse")
+
+
+# finalize workflow
+final_wf2 <- tune_wf2%>%
+  finalize_workflow(best_auc2)
+
+# final fit
+rf_fit2 <- final_wf2%>%
+  parsnip::fit(survey_Fast_food)
+
+library(vip)
+vip(rf_fit2%>%extract_fit_engine())+theme_bw()
+
+```
+
+## model for Fruits
+
+```{r}
+rf_recipe3<-recipe(Grams ~., survey_Fruits %>%select(Grams, AGE, Gender, EDUCATION, MARITAL,Race, 'Country of Birth' ))
+
+tune_wf3 <- workflow() %>%
+  add_recipe(rf_recipe3) %>%
+  add_model(rf_spec)
+
+# 10-fold crossvalidation
+set.seed(345)
+folds3 <- vfold_cv(survey_Fruits, v = 10,strata = Grams)
+
+tune_res3 <- tune_grid(
+  tune_wf3,
+  resamples = folds3,
+  grid = 5)
+
+tune_res3
+
+# select the best hyperparameters
+best_auc3 <- select_best(tune_res3, "rmse")
+
+
+# finalize workflow
+final_wf3 <- tune_wf3%>%
+  finalize_workflow(best_auc3)
+
+# final fit
+rf_fit3 <- final_wf3%>%
+  parsnip::fit(survey_Fruits)
+
+library(vip)
+vip(rf_fit3%>%extract_fit_engine())+theme_bw()
+
+```
+
+## model for Vegetable
+
+```{r}
+rf_recipe4<-recipe(Grams ~., survey_Vegetables %>%select(Grams, AGE, Gender, EDUCATION, MARITAL,Race, 'Country of Birth' ))
+
+tune_wf4 <- workflow() %>%
+  add_recipe(rf_recipe4) %>%
+  add_model(rf_spec)
+
+# 10-fold crossvalidation
+set.seed(345)
+folds4 <- vfold_cv(survey_Vegetables, v = 10,strata = Grams)
+
+tune_res4 <- tune_grid(
+  tune_wf4,
+  resamples = folds4,
+  grid = 5)
+
+tune_res4
+
+# select the best hyperparameters
+best_auc4 <- select_best(tune_res4, "rmse")
+
+
+# finalize workflow
+final_wf4 <- tune_wf4%>%
+  finalize_workflow(best_auc4)
+
+# final fit
+rf_fit4 <- final_wf4%>%
+  parsnip::fit(survey_Vegetables)
+
+library(vip)
+vip(rf_fit4%>%extract_fit_engine())+theme_bw()
+
+```
+
+## model for Sugar
+
+```{r}
+
+rf_recipe5<-recipe(Sugar ~., survey_final %>%select(Sugar, AGE, Gender, EDUCATION, MARITAL,Race, 'Country of Birth' ))
+
+tune_wf5 <- workflow() %>%
+  add_recipe(rf_recipe5) %>%
+  add_model(rf_spec)
+
+# 10-fold crossvalidation
+set.seed(345)
+folds5 <- vfold_cv(survey_final, v = 10,strata = Grams)
+
+tune_res5 <- tune_grid(
+  tune_wf5,
+  resamples = folds5,
+  grid = 5)
+
+tune_res5
+
+# select the best hyperparameters
+best_auc5 <- select_best(tune_res5, "rmse")
+
+
+# finalize workflow
+final_wf5 <- tune_wf5%>%
+  finalize_workflow(best_auc5)
+
+# final fit
+rf_fit5 <- final_wf5%>%
+  parsnip::fit(survey_final)
+
+library(vip)
+vip(rf_fit5%>%extract_fit_engine())+theme_bw()
+
+```
+
+## where did you eat the food
+```{r}
+
+rf_spec1 <- rand_forest(trees=1000,
+                       mtry = tune(),
+  min_n = tune()) %>%
+  set_engine("ranger",importance="permutation") %>%
+  set_mode("classification")
+
+colnames(survey_final)[1] = "Did_eat_the_food_at_home"
+
+rf_recipe6<-recipe( Did_eat_the_food_at_home ~., survey_final %>%select(Did_eat_the_food_at_home, AGE, Gender, EDUCATION, MARITAL,Race, 'Country of Birth' ))
+
+tune_wf6 <- workflow() %>%
+  add_recipe(rf_recipe6) %>%
+  add_model(rf_spec1)
+
+# 10-fold crossvalidation
+set.seed(345)
+folds6 <- vfold_cv(survey_final, v = 10,strata = Grams)
+
+tune_res6 <- tune_grid(
+  tune_wf6,
+  resamples = folds6,
+  grid = 5)
+
+tune_res6
+
+# select the best hyperparameters
+best_auc6 <- select_best(tune_res6, "roc_auc")
+
+
+# finalize workflow
+final_wf6 <- tune_wf6%>%
+  finalize_workflow(best_auc6)
+
+# final fit
+rf_fit6 <- final_wf6%>%
+  parsnip::fit(survey_final)
+
+library(vip)
+vip(rf_fit6%>%extract_fit_engine())+theme_bw()
+
+```
+
+## Predicted probabilities of each segment
+
+```{r}
+
+# predicted probabilities
+
+segment_pred1<-predict(rf_fit,survey_meat,type="numeric")
+
+survey_meat$segment_pred1 <- as.factor(segment_pred1$.pred)
+ summary(segment_pred1)
+ 
+```
+
+```{r}
+
+pums_final<-pums_final%>%filter(!is.na(Race))
+
+pums_final$Meat<-predict(rf_fit,pums_final,type="numeric")$.pred
+pums_final$Milk_dairy<-predict(rf_fit1,pums_final,type="numeric")$.pred
+pums_final$Fast_food<-predict(rf_fit2,pums_final,type="numeric")$.pred
+pums_final$Fruits<-predict(rf_fit3,pums_final,type="numeric")$.pred
+pums_final$vegetables<-predict(rf_fit4,pums_final,type="numeric")$.pred
+pums_final$Sugar<-predict(rf_fit5,pums_final,type="numeric")$.pred
+pums_final$Eat_outside<-predict(rf_fit6,pums_final,type="class")$.pred_class
+
+```
+
+## Performance assessment: ROC AUC
+
+```{r}
+survey_final<-survey_final%>%filter(!is.na(MARITAL))
+
+survey_meat$segment1<-predict(rf_fit,survey_meat,type="numeric")$.pred
+
+# pperformance assessment
+survey_final%>%
+  rmse(Sugar, segment1)
+
+
+# R-squared
+actual <- survey_meat$Grams
+R2 <- (sum((actual-survey_meat$segment1)^2)/sum((actual-mean(actual))^2))
+
+```
+
+```{r}
+
+survey_final$Eat_Home_outside_pred<-predict(rf_fit6,survey_final,type="class")$.pred_class
+
+survey_final%>%
+  roc_auc(Did_eat_the_food_at_home, Eat_Home_outside_pred)
+
+
+survey_final$segment_predicted<-predict(rf_fit6,survey_final)$.pred_class
+
+
+auccc<-accuracy(survey_final, Did_eat_the_food_at_home  ,segment_predicted )
+
+plot(auccc)
+
+
+```
+
+## Tabulate by PUMA
+
+```{r}
+puma_data<-pums_final%>%
+  group_by(PUMA)%>%
+  summarise(segment1_perc=weighted.mean(segment1,PWGTP)*100,
+            pop20=sum(PWGTP),
+            segment1_abs=round(pop20*segment1_perc/100,0))
+
+dd<-log(puma_data$Sugar_perc)
+                       
+puma_data<-pums_final%>%
+  group_by(PUMA)%>%
+  summarise( pop20=sum(PWGTP),
+    Meat_perc=(sum(PWGTP[Meat]) / pop20)*100,
+    Milk_dairy_perc=(sum(PWGTP[Milk_dairy]) / pop20)*100,
+    Fast_food_perc=(sum(PWGTP[Fast_food]) / pop20)*100,
+    Fruits_perc=(sum(PWGTP[Fruits]) / pop20)*100,
+    vegetables_perc=(sum(PWGTP[vegetables]) / pop20)*100,
+    Sugar_perc=(sum(PWGTP[Sugar]) / pop20)*100,
+    Eat_outside_perc=(sum(PWGTP[Eat_outside]) / pop20)*100,
+            Sugar_abs=round(pop20*Sugar_perc/100,0),
+            Eat_Home_outside_abs=round(pop20*Eat_outside_perc/100,0))
+
+Column_100_ <- c("Meat_perc", "Milk_dairy_perc", "Fast_food_perc", "Fruits_perc", "vegetables_perc", "Sugar_perc", "Eat_outside_perc")
+
+puma_data2 <- puma_data[paste0(Column_100_, "_scaled")] <- lapply(puma_data[Column_100_], function(x) (x/max(x))*100)
+
+
+puma_data2 <- puma_data %>% mutate_at(vars(Column_100_), ~ scales::rescale(.)* 100)
+
+export(puma_data,"puma_data2.xlsx",overwrite=TRUE)
+```
+
+```{r}
+---
+title: "Segment  Prevalence by Area (% of Population 20+)"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+
+library(mapview)
+library(tigris)
+library(sf)
+library(rio)
+library(tidyverse)
+library(leafpop)
+# PUMA boundaries
+puma_boundaries <-pumas(state = "CA",year = 2020 )
+puma_boundaries1 <-pumas(state = "WA",year = 2020)
+puma_boundaries2 <-pumas(state = "OR",year = 2020)
+puma_boundaries3 <-pumas(state = "NV",year = 2020)
+puma_boundaries4 <-pumas(state = "UT",year = 2020)
+puma_boundaries5 <-pumas(state = "AZ",year = 2020)
+puma_boundaries6 <-pumas(state = "NM",year = 2020)  
+puma_boundaries7 <-pumas(state = "TX",year = 2020)
+puma_boundaries8 <-pumas(state = "ID",year = 2020)
+
+puma_boundaries0 <- rbind(puma_boundaries, puma_boundaries2, puma_boundaries3, puma_boundaries4, puma_boundaries5, puma_boundaries6, puma_boundaries7, puma_boundaries8)
+
+puma_boundaries <- puma_boundaries0
+
+length(unique( puma_data$PUMA))
+
+# add characteristics of each PUMA to be displayed in the table
+
+ puma_data<-import("C:/Users/Zahir Nikmal/Downloads/puma_data.xlsx")
+
+puma_boundaries0<-puma_boundaries0%>%
+  left_join(puma_data,by=c("PUMACE10"="PUMA"))%>%
+  
+  mutate(NAMELSAD10=gsub(" PUMA","",NAMELSAD10))
+
+
+## Export puma data
+puma_boundaries_export<-puma_boundaries0%>%
+  select(PUMACE10,NAMELSAD10,contains("perc"),contains("pop20"),contains("abs"),contains("_ov"))%>%st_drop_geometry()
+colnames(puma_boundaries_export)<-c("PUMA ID",
+"PUMA name","Meat Consumption %", "Milk&Dairy Consumption %", "Fast Food Consumption %", "Fruit Consumption %", "Vegetables Consumption %", "Sugar Consumption %", "Eaten out side %", "Population 20+")
+
+
+export(puma_boundaries_export,"puma_boundaries_export.xlsx",overwrite=TRUE)
+
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+library(leaflet)
+library(stringr)
+library(sf)
+
+# Create color palettes for segment1_perc
+
+palette1 <- colorNumeric(palette = "viridis", domain = puma_boundaries0$Meat_perc)
+
+palette2 <- colorNumeric(palette = "viridis", domain = puma_boundaries0$Milk_dairy_perc)
+
+palette3 <- colorNumeric(palette = "viridis", domain = puma_boundaries0$Fast_food_perc)
+
+palette4 <- colorNumeric(palette = "viridis", domain = puma_boundaries0$Fruits_perc)
+
+palette5 <- colorNumeric(palette = "viridis", domain = puma_boundaries0$vegetables_perc)
+
+palette6 <- colorNumeric(palette = "viridis", domain = puma_boundaries0$Sugar_perc)
+
+palette7 <- colorNumeric(palette = "viridis", domain = puma_boundaries0$Eat_outside_perc)
+
+# Create the leaflet map
+puma_boundaries0 %>%
+    st_transform(crs = "+init=epsg:4326") %>%
+    leaflet(width = "100%") %>%
+    addProviderTiles(provider = "CartoDB.Positron") %>%
+    addPolygons(
+              popup=~paste0(NAMELSAD10,"<br>",Meat_perc),
+              fillColor = ~palette1(Meat_perc), 
+              weight = 1, 
+              opacity = 1, 
+              color = "white", 
+              fillOpacity = 0.7,
+              group="Meat Consumption %") %>% 
+  addPolygons(popup=~paste0(NAMELSAD10,"<br>",Milk_dairy_perc),
+              fillColor = ~palette2(Milk_dairy_perc), 
+              weight = 1, 
+              opacity = 1, 
+              color = "white", 
+              fillOpacity = 0.7, 
+              group = "Milk&Dairy Consumption %") %>% 
+  addPolygons(popup=~paste0(NAMELSAD10,"<br>",Fast_food_perc),
+              fillColor = ~palette3(Fast_food_perc), 
+              weight = 1, 
+              opacity = 1, 
+              color = "white", 
+              fillOpacity = 0.7, 
+              group = "Fast Food Consumption %") %>% 
+  addPolygons(popup=~paste0(NAMELSAD10,"<br>",Fruits_perc),
+              fillColor = ~palette4(Fruits_perc), 
+              weight = 1, 
+              opacity = 1, 
+              color = "white", 
+              fillOpacity = 0.7, 
+              group = "Fruit Consumption %") %>% 
+  addPolygons(popup=~paste0(NAMELSAD10,"<br>",vegetables_perc),
+              fillColor = ~palette5(vegetables_perc), 
+              weight = 1, 
+              opacity = 1, 
+              color = "white", 
+              fillOpacity = 0.7, 
+              group = "Vegetables Consumption %") %>% 
+  addPolygons(popup=~paste0(NAMELSAD10,"<br>",Sugar_perc),
+              fillColor = ~palette6(Sugar_perc), 
+              weight = 1, 
+              opacity = 1, 
+              color = "white", 
+              fillOpacity = 0.7, 
+              group = "Sugar Consumption %") %>% 
+  addPolygons(popup=~paste0(NAMELSAD10,"<br>",Eat_outside_perc),
+              fillColor = ~palette7(Eat_outside_perc), 
+              weight = 1, 
+              opacity = 1, 
+              color = "white", 
+              fillOpacity = 0.7, 
+              group = "Eaten out side %") %>% 
+  addLegend("bottomright", pal = palette1, values = ~Meat_perc, title = "Meat Consumption %", opacity = 1, group="Meat Consumption %", layerId="Meat Consumption %") %>% 
+  addLegend("bottomright", pal = palette2, values = ~Milk_dairy_perc, title = "Milk&Dairy Consumption %", opacity = 1, group="Milk&Dairy Consumption %", layerId="Milk&Dairy Consumption %") %>%
+  addLegend("bottomright", pal = palette3, values = ~Fast_food_perc, title = "Fast Food Consumption %", opacity = 1, group="Fast Food Consumption %", layerId="Fast Food Consumption %") %>%
+addLegend("bottomright", pal = palette4, values = ~Fruits_perc, title = "Fruit Consumption %", opacity = 1, group="Fruit Consumption %", layerId="Fruit Consumption %") %>%
+addLegend("bottomright", pal = palette5, values = ~vegetables_perc, title = "Vegetables Consumption %", opacity = 1, group="Vegetables Consumption %", layerId="Vegetables Consumption %") %>%
+addLegend("bottomright", pal = palette6, values = ~Sugar_perc, title = "Sugar Consumption %", opacity = 1, group="Sugar Consumption %", layerId="Sugar Consumption %") %>%
+addLegend("bottomright", pal = palette7, values = ~Eat_outside_perc, title = "Eaten out side %", opacity = 1, group="Eaten out side %", layerId="Eaten out side %") %>%
+  addLayersControl(baseGroups = c("Meat Consumption %","Milk&Dairy Consumption %","Fast Food Consumption %","Fruit Consumption %","Vegetables Consumption %","Sugar Consumption %","Eaten out side %"),
+                   options = layersControlOptions(collapsed = FALSE))%>% 
+hideGroup("Milk&Dairy Consumption %")%>%
+hideGroup("Fast Food Consumption %")%>%
+hideGroup("Fruit Consumption %")%>%
+hideGroup("Vegetables Consumption %")%>%
+hideGroup("Sugar Consumption %")%>%
+hideGroup("Eaten out side %")%>%
+  htmlwidgets::onRender("
+    function(el, x) {
+      var initialLegend = 'Meat Consumption %' 
+      var myMap = this;
+      for (var legend in myMap.controls._controlsById) {
+        var el = myMap.controls.get(legend.toString())._container;
+        if(legend.toString() === initialLegend) {
+          el.style.display = 'block';
+        } else {
+          el.style.display = 'none';
+        };
+      };
+    myMap.on('baselayerchange',
+      function (layer) {
+        for (var legend in myMap.controls._controlsById) {
+          var el = myMap.controls.get(legend.toString())._container;
+          if(legend.toString() === layer.name) {
+            el.style.display = 'block';
+          } else {
+            el.style.display = 'none';
+          };
+        };
+      });
+    }")
+
+```
+
+
+## Varible importance for Meat
+```{r}
+library(dplyr)
+vip_features <- c("AGE", "EDUCATION", "MARITAL", 
+                  "Gender", "Race", "Country of Birth")
+
+vip_train <- 
+  survey_meat %>% 
+  select(all_of(vip_features))
+
+
+explainer_rf <- 
+  explain_tidymodels(
+    rf_fit, 
+    data = vip_train, 
+    y = survey_meat$Grams,
+    label = "random forest",
+    verbose = FALSE
+  )
+
+duplex <- survey_meat[120,]
+
+rf_breakdown <- predict_parts(explainer = explainer_rf, new_observation = duplex)
+
+####
+library(forcats)
+
+big_house <- vip_train[1269,]
+
+set.seed(1802)
+shap_house <- 
+  predict_parts(
+    explainer = explainer_rf, 
+    new_observation = big_house, 
+    type = "shap",
+    B = 20
+  )
+
+shap_house %>%
+  group_by(variable) %>%
+  mutate(mean_val = mean(contribution)) %>%
+  ungroup() %>%
+  mutate(variable = fct_reorder(variable, abs(mean_val))) %>%
+  ggplot(aes(contribution, variable, fill = mean_val > 0)) +
+  geom_col(data = ~distinct(., variable, mean_val), 
+           aes(mean_val, variable), 
+           alpha = 0.5) +
+  geom_boxplot(width = 0.5) +
+  theme(legend.position = "none") +
+  scale_fill_viridis_d() +
+  labs(y = NULL)
+
+#####
+
+ggplot_pdp <- function(obj, x) {
+  
+  p <- 
+    as_tibble(obj$agr_profiles) %>%
+    mutate(`_label_` = stringr::str_remove(`_label_`, "^[^_]*_")) %>%
+    ggplot(aes(`_x_`, `_yhat_`)) +
+    geom_line(data = as_tibble(obj$cp_profiles),
+              aes(x = {{ x }}, group = `_ids_`),
+              linewidth = 0.5, alpha = 0.05, color = "gray50")
+  
+  num_colors <- n_distinct(obj$agr_profiles$`_label_`)
+  
+  if (num_colors > 1) {
+    p <- p + geom_line(aes(color = `_label_`), linewidth = 1.2, alpha = 0.8)
+  } else {
+    p <- p + geom_line(color = "midnightblue", linewidth = 1.2, alpha = 0.8)
+  }
+  
+  p
+}
+
+
+
+#######
+
+set.seed(1806)
+pdp_liv <- model_profile(explainer_rf, N = 1000, 
+                         variables = "AGE",
+                         groups = "Race")
+
+ggplot_pdp(pdp_liv, AGE) +
+  scale_x_log10() +
+  scale_color_brewer(palette = "Dark2") +
+  labs(x = "Age", 
+       y = "Grams", 
+       color = NULL)
+
+# By Gender
+
+set.seed(1806)
+pdp_liv <- model_profile(explainer_rf, N = 1000, 
+                         variables = "AGE",
+                         groups = "Gender")
+
+ggplot_pdp(pdp_liv, AGE) +
+  scale_x_log10() +
+  scale_color_brewer(palette = "Dark2") +
+  labs(x = "Age", 
+       y = "Grams", 
+       color = NULL)
+
+# By Education
+
+set.seed(1806)
+pdp_liv <- model_profile(explainer_rf, N = 1000, 
+                         variables = "AGE",
+                         groups = "EDUCATION")
+
+ggplot_pdp(pdp_liv, AGE) +
+  scale_color_brewer(palette = "Dark2") +
+  labs(x = "Age", 
+       y = "Grams", 
+       color = NULL)
+
+```
+
+
+## Varible importance for milk
+
+```{r}
+
+vip_features <- c("AGE", "EDUCATION", "MARITAL", 
+                  "Gender", "Race", "Country of Birth")
+
+vip_train1 <- 
+  survey_Milk_Dairy %>% 
+  select(all_of(vip_features))
+
+
+explainer_rf1 <- 
+  explain_tidymodels(
+    rf_fit1, 
+    data = vip_train1, 
+    y = survey_Milk_Dairy$Grams,
+    label = "random forest",
+    verbose = FALSE
+  )
+
+duplex1 <- survey_Milk_Dairy[120,]
+
+rf_breakdown1 <- predict_parts(explainer = explainer_rf1, new_observation = duplex1)
+
+####
+
+big_house1 <- vip_train1[1269,]
+
+set.seed(1802)
+shap_house1 <- 
+  predict_parts(
+    explainer = explainer_rf1, 
+    new_observation = big_house1, 
+    type = "shap",
+    B = 20
+  )
+
+shap_house1 %>%
+  group_by(variable) %>%
+  mutate(mean_val = mean(contribution)) %>%
+  ungroup() %>%
+  mutate(variable = fct_reorder(variable, abs(mean_val))) %>%
+  ggplot(aes(contribution, variable, fill = mean_val > 0)) +
+  geom_col(data = ~distinct(., variable, mean_val), 
+           aes(mean_val, variable), 
+           alpha = 0.5) +
+  geom_boxplot(width = 0.5) +
+  theme(legend.position = "none") +
+  scale_fill_viridis_d() +
+  labs(y = NULL)
+
+###
+
+set.seed(1806)
+pdp_liv <- model_profile(explainer_rf1, N = 1000, 
+                         variables = "AGE",
+                         groups = "Race")
+
+ggplot_pdp(pdp_liv, AGE) +
+  scale_x_log10() +
+  scale_color_brewer(palette = "Dark2") +
+  labs(x = "Age", 
+       y = "Dairy by Grams", 
+       color = NULL)
+
+# By Gender
+
+set.seed(1806)
+pdp_liv <- model_profile(explainer_rf1, N = 1000, 
+                         variables = "AGE",
+                         groups = "Gender")
+
+ggplot_pdp(pdp_liv, AGE) +
+  scale_x_log10() +
+  scale_color_brewer(palette = "Dark2") +
+  labs(x = "Age", 
+       y = "Dairy by Grams", 
+       color = NULL)
+
+# By Education
+
+set.seed(1806)
+pdp_liv <- model_profile(explainer_rf1, N = 1000, 
+                         variables = "AGE",
+                         groups = "EDUCATION")
+
+ggplot_pdp(pdp_liv, AGE) +
+  scale_color_brewer(palette = "Dark2") +
+  labs(x = "Age", 
+       y = " Dairy by Grams", 
+       color = NULL)
+
+```
+
+# Varible importance for Fast food
+
+```{r}
+
+vip_features <- c("AGE", "EDUCATION", "MARITAL", 
+                  "Gender", "Race", "Country of Birth")
+
+vip_train2 <- 
+  survey_Fast_food %>% 
+  select(all_of(vip_features))
+
+
+explainer_rf2 <- 
+  explain_tidymodels(
+    rf_fit2, 
+    data = vip_train2, 
+    y = survey_Milk_Dairy$Grams,
+    label = "random forest",
+    verbose = FALSE
+  )
+
+duplex2 <- survey_Fast_food[120,]
+
+rf_breakdown2 <- predict_parts(explainer = explainer_rf2, new_observation = duplex2)
+
+####
+
+big_house2 <- vip_train2[1269,]
+
+set.seed(1802)
+shap_house2 <- 
+  predict_parts(
+    explainer = explainer_rf2, 
+    new_observation = big_house2, 
+    type = "shap",
+    B = 20
+  )
+
+shap_house2 %>%
+  group_by(variable) %>%
+  mutate(mean_val = mean(contribution)) %>%
+  ungroup() %>%
+  mutate(variable = fct_reorder(variable, abs(mean_val))) %>%
+  ggplot(aes(contribution, variable, fill = mean_val > 0)) +
+  geom_col(data = ~distinct(., variable, mean_val), 
+           aes(mean_val, variable), 
+           alpha = 0.5) +
+  geom_boxplot(width = 0.5) +
+  theme(legend.position = "none") +
+  scale_fill_viridis_d() +
+  labs(y = NULL)
+
+###
+
+set.seed(1806)
+pdp_liv <- model_profile(explainer_rf2, N = 1000, 
+                         variables = "AGE",
+                         groups = "Race")
+
+ggplot_pdp(pdp_liv, AGE) +
+  scale_x_log10() +
+  scale_color_brewer(palette = "Dark2") +
+  labs(x = "Age", 
+       y = "Fast Food by Grams", 
+       color = NULL)
+
+# By Gender
+
+set.seed(1806)
+pdp_liv <- model_profile(explainer_rf2, N = 1000, 
+                         variables = "AGE",
+                         groups = "Gender")
+
+ggplot_pdp(pdp_liv, AGE) +
+  scale_x_log10() +
+  scale_color_brewer(palette = "Dark2") +
+  labs(x = "Age", 
+       y = "Fast Food by Grams", 
+       color = NULL)
+
+# By Education
+
+set.seed(1806)
+pdp_liv <- model_profile(explainer_rf2, N = 1000, 
+                         variables = "AGE",
+                         groups = "EDUCATION")
+
+ggplot_pdp(pdp_liv, AGE) +
+  scale_color_brewer(palette = "Dark2") +
+  labs(x = "Age", 
+       y = "Fast Food by Grams", 
+       color = NULL)
+
+```
+
+# Varible importance for Fruit
+
+```{r}
+vip_features <- c("AGE", "EDUCATION", "MARITAL", 
+                  "Gender", "Race", "Country of Birth")
+
+vip_train3 <- 
+  survey_Fast_food %>% 
+  filter(Grams < 250) %>% 
+  select(all_of(vip_features))
+
+
+explainer_rf3 <- 
+  explain_tidymodels(
+    rf_fit3, 
+    data = vip_train3, 
+    y = survey_Fruits$Grams,
+    label = "random forest",
+    verbose = FALSE
+  )
+
+duplex3 <- survey_Fruits[120,]
+
+rf_breakdown3 <- predict_parts(explainer = explainer_rf3, new_observation = duplex3)
+
+####
+
+big_house3 <- vip_train3[1269,]
+
+set.seed(1802)
+shap_house3 <- 
+  predict_parts(
+    explainer = explainer_rf3, 
+    new_observation = big_house3, 
+    type = "shap",
+    B = 20
+  )
+
+shap_house3 %>%
+  group_by(variable) %>%
+  mutate(mean_val = mean(contribution)) %>%
+  ungroup() %>%
+  mutate(variable = fct_reorder(variable, abs(mean_val))) %>%
+  ggplot(aes(contribution, variable, fill = mean_val > 0)) +
+  geom_col(data = ~distinct(., variable, mean_val), 
+           aes(mean_val, variable), 
+           alpha = 0.5) +
+  geom_boxplot(width = 0.5) +
+  theme(legend.position = "none") +
+  scale_fill_viridis_d() +
+  labs(y = NULL)
+
+###
+
+set.seed(1806)
+pdp_liv <- model_profile(explainer_rf3, N = 1000, 
+                         variables = "AGE",
+                         groups = "Race")
+
+ggplot_pdp(pdp_liv, AGE) +
+  scale_x_log10() +
+  scale_color_brewer(palette = "Dark2") +
+  labs(x = "Age", 
+       y = "Fruit by Grams", 
+       color = NULL)
+
+# By Gender
+
+set.seed(1806)
+pdp_liv <- model_profile(explainer_rf3, N = 1000, 
+                         variables = "AGE",
+                         groups = "Gender")
+
+ggplot_pdp(pdp_liv, AGE) +
+  scale_x_log10() +
+  scale_color_brewer(palette = "Dark2") +
+  labs(x = "Age", 
+       y = "Fruit by Grams", 
+       color = NULL)
+
+# By Education
+
+set.seed(1806)
+pdp_liv <- model_profile(explainer_rf3, N = 1000, 
+                         variables = "AGE",
+                         groups = "EDUCATION")
+
+ggplot_pdp(pdp_liv, AGE) +
+  scale_color_brewer(palette = "Dark2") +
+  labs(x = "Age", 
+       y = "Fruit by Grams", 
+       color = NULL)
+
+```
+
+# Varible importance for Vegetable
+
+```{r}
+vip_features <- c("AGE", "EDUCATION", "MARITAL", 
+                  "Gender", "Race", "Country of Birth")
+
+vip_train4 <- 
+  survey_Vegetables %>% 
+  filter(Grams < 150 )  %>% 
+  select(all_of(vip_features))
+
+
+explainer_rf4 <- 
+  explain_tidymodels(
+    rf_fit4, 
+    data = vip_train4, 
+    y = survey_Vegetables$Grams,
+    label = "random forest",
+    verbose = FALSE
+  )
+
+duplex4 <- survey_Vegetables[120,]
+
+rf_breakdown4 <- predict_parts(explainer = explainer_rf4, new_observation = duplex4)
+
+####
+
+big_house4 <- vip_train4[1269,]
+
+set.seed(1802)
+shap_house4 <- 
+  predict_parts(
+    explainer = explainer_rf4, 
+    new_observation = big_house4, 
+    type = "shap",
+    B = 20
+  )
+
+shap_house4 %>%
+  group_by(variable) %>%
+  mutate(mean_val = mean(contribution)) %>%
+  ungroup() %>%
+  mutate(variable = fct_reorder(variable, abs(mean_val))) %>%
+  ggplot(aes(contribution, variable, fill = mean_val > 0)) +
+  geom_col(data = ~distinct(., variable, mean_val), 
+           aes(mean_val, variable), 
+           alpha = 0.5) +
+  geom_boxplot(width = 0.5) +
+  theme(legend.position = "none") +
+  scale_fill_viridis_d() +
+  labs(y = NULL)
+
+###
+
+set.seed(1806)
+pdp_liv <- model_profile(explainer_rf4, N = 1000, 
+                         variables = "AGE",
+                         groups = "Race")
+
+ggplot_pdp(pdp_liv, AGE) +
+  scale_x_log10() +
+  scale_color_brewer(palette = "Dark2") +
+  labs(x = "Age", 
+       y = "Vegetables by Grams", 
+       color = NULL)
+
+# By Gender
+
+set.seed(1806)
+pdp_liv <- model_profile(explainer_rf4, N = 1000, 
+                         variables = "AGE",
+                         groups = "Gender")
+
+ggplot_pdp(pdp_liv, AGE) +
+  scale_x_log10() +
+  scale_color_brewer(palette = "Dark2") +
+  labs(x = "Age", 
+       y = "Vegetables by Grams", 
+       color = NULL)
+
+# By Education
+
+set.seed(1806)
+pdp_liv <- model_profile(explainer_rf4, N = 1000, 
+                         variables = "AGE",
+                         groups = "EDUCATION")
+
+ggplot_pdp(pdp_liv, AGE) +
+  scale_color_brewer(palette = "Dark2") +
+  labs(x = "Age", 
+       y = "Vegetables by Grams", 
+       color = NULL)
+
+```
+
+# Varible importance for Sugar
+
+```{r}
+
+vip_features <- c("AGE", "EDUCATION", "MARITAL", 
+                  "Gender", "Race", "Country of Birth")
+
+vip_train5 <- 
+  survey_final %>% 
+  select(all_of(vip_features))
+
+
+explainer_rf5 <- 
+  explain_tidymodels(
+    rf_fit5, 
+    data = vip_train5, 
+    y = survey_final$Sugar,
+    label = "random forest",
+    verbose = FALSE
+  )
+
+duplex5 <- survey_final[120,]
+
+rf_breakdown5 <- predict_parts(explainer = explainer_rf5, new_observation = duplex5)
+
+####
+
+big_house5 <- vip_train5[1269,]
+
+set.seed(1802)
+shap_house5 <- 
+  predict_parts(
+    explainer = explainer_rf5, 
+    new_observation = big_house5, 
+    type = "shap",
+    B = 20
+  )
+
+shap_house5 %>%
+  group_by(variable) %>%
+  mutate(mean_val = mean(contribution)) %>%
+  ungroup() %>%
+  mutate(variable = fct_reorder(variable, abs(mean_val))) %>%
+  ggplot(aes(contribution, variable, fill = mean_val > 0)) +
+  geom_col(data = ~distinct(., variable, mean_val), 
+           aes(mean_val, variable), 
+           alpha = 0.5) +
+  geom_boxplot(width = 0.5) +
+  theme(legend.position = "none") +
+  scale_fill_viridis_d() +
+  labs(y = NULL)
+
+###
+
+set.seed(1806)
+pdp_liv <- model_profile(explainer_rf5, N = 1000, 
+                         variables = "AGE",
+                         groups = "Race")
+
+ggplot_pdp(pdp_liv, AGE) +
+  scale_x_log10() +
+  scale_color_brewer(palette = "Dark2") +
+  labs(x = "Age", 
+       y = "Sugar by Grams", 
+       color = NULL)
+
+# By Gender
+
+set.seed(1806)
+pdp_liv <- model_profile(explainer_rf5, N = 1000, 
+                         variables = "AGE",
+                         groups = "Gender")
+
+ggplot_pdp(pdp_liv, AGE) +
+  scale_x_log10() +
+  scale_color_brewer(palette = "Dark2") +
+  labs(x = "Age", 
+       y = "Sugar by Grams", 
+       color = NULL)
+
+# By Education
+
+set.seed(1806)
+pdp_liv <- model_profile(explainer_rf5, N = 1000, 
+                         variables = "AGE",
+                         groups = "EDUCATION")
+
+ggplot_pdp(pdp_liv, AGE) +
+  scale_color_brewer(palette = "Dark2") +
+  labs(x = "Age", 
+       y = "Sugar by Grams", 
+       color = NULL)
+
+```
+
+# Varible importance for home out side
+
+```{r}
+
+vip_features <- c("AGE", "EDUCATION", "MARITAL", 
+                  "Gender", "Race")
+
+vip_train6 <- 
+  survey_final %>% 
+  select(all_of(vip_features))
+
+
+explainer_rf6 <- 
+  explain_tidymodels(
+    rf_fit6, 
+    data = vip_train6, 
+    y = survey_final$Did_eat_the_food_at_home,
+    label = "random forest",
+    verbose = FALSE
+  )
+
+duplex6 <- survey_final[120,]
+
+rf_breakdown6 <- predict_parts(explainer = explainer_rf6, new_observation = duplex6)
+
+####
+
+big_house6 <- vip_train6[1269,]
+
+set.seed(1802)
+shap_house6 <- 
+  predict_parts(
+    explainer = explainer_rf6, 
+    new_observation = big_house6, 
+    type = "shap",
+    B = 20
+  )
+
+shap_house6 %>%
+  group_by(variable) %>%
+  mutate(mean_val = mean(contribution)) %>%
+  ungroup() %>%
+  mutate(variable = fct_reorder(variable, abs(mean_val))) %>%
+  ggplot(aes(contribution, variable, fill = mean_val > 0)) +
+  geom_col(data = ~distinct(., variable, mean_val), 
+           aes(mean_val, variable), 
+           alpha = 0.5) +
+  geom_boxplot(width = 0.5) +
+  theme(legend.position = "none") +
+  scale_fill_viridis_d() +
+  labs(y = NULL)
+
+###
+
+set.seed(1806)
+pdp_liv <- model_profile(explainer_rf6, N = 1000, 
+                         variables = "AGE",
+                         groups = "Race")
+
+ggplot_pdp(pdp_liv, AGE) +
+  scale_x_log10() +
+  scale_color_brewer(palette = "Dark2") +
+  labs(x = "Age", 
+       y = "Sugar by Grams", 
+       color = NULL)
+
+# By Gender
+
+set.seed(1806)
+pdp_liv <- model_profile(explainer_rf6, N = 1000, 
+                         variables = "AGE",
+                         groups = "Gender")
+
+ggplot_pdp(pdp_liv, AGE) +
+  scale_x_log10() +
+  scale_color_brewer(palette = "Dark2") +
+  labs(x = "Age", 
+       y = "Eat out side", 
+       color = NULL)
+
+# By Education
+
+set.seed(1806)
+pdp_liv <- model_profile(explainer_rf6, N = 1000, 
+                         variables = "AGE",
+                         groups = "EDUCATION")
+
+ggplot_pdp(pdp_liv, AGE) +
+  scale_color_brewer(palette = "Dark2") +
+  labs(x = "Age", 
+       y = "Eat out side", 
+       color = NULL)
+
+
+```
+
+\`\`\`{r}
